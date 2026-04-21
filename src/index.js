@@ -6,9 +6,10 @@
  *   港股    → 东方财富 push2 API (push2.eastmoney.com)
  *   A股基金 → 天天基金 pingzhongdata (fund.eastmoney.com)
  *
- * 市场状态：从数据源返回值提取，周末仅做本地兜底。
- *   韩股/港股 API 自带 marketStatus 字段；
- *   A股基金通过净值日期与当前日期对比判断。
+ * 市场状态：
+ *   韩股  → Naver API 返回 marketStatus 字段（OPEN/CLOSE）
+ *   港股  → 东方财富 API 无市场状态字段，用香港时区交易时段判断
+ *   A股  → 基金净值日期与当天对比（节假日无法自动识别）
  *
  * 股票配置见 stocks.json，按 market/source 自动匹配抓取网址。
  */
@@ -81,7 +82,7 @@ async function fetchEastMoneyHK(code) {
   const open = d.f46 / 1000;
   const volume = d.f47;
   const turnover = d.f48;
-  const marketStatus = d.f60 === '1' ? 'CLOSE' : 'OPEN';
+  // f60 是昨收价，不是市场状态。港股状态用本地时区判断。
 
   return {
     name,
@@ -93,7 +94,6 @@ async function fetchEastMoneyHK(code) {
     open,
     volume,
     turnover,
-    marketStatus,
   };
 }
 
@@ -212,39 +212,84 @@ function extractMarketStatus(results) {
 
   for (const r of results) {
     if (!r.success) continue;
-    const ms = r.extra?.marketStatus;
 
-    if (r.source === 'naver' && ms && !kse) {
+    // 韩股：Naver API 直接返回 marketStatus
+    if (r.source === 'naver' && !kse) {
+      const ms = r.extra?.marketStatus;
       kse = ms === 'OPEN' ? '开盘中' : '休市';
     }
-    if (r.source === 'eastmoney' && ms && !hk) {
-      hk = ms === 'OPEN' ? '开盘中' : '休市';
+
+    // 港股：东方财富 push2 API 没有市场状态字段，用本地时区判断
+    if (r.source === 'eastmoney' && !hk) {
+      hk = getHKMarketStatus();
     }
+
+    // A股基金：净值日期=今天 → 可能在盘中，否则休市
     if (r.source === 'eastmoney_fund' && !cn) {
       const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
-      cn = r.extra?.navDate === today ? '开盘中' : '休市';
+      cn = r.extra?.navDate === today ? '净值更新中' : '休市';
     }
   }
 
-  // 兜底：周末
-  if (!kse || !hk || !cn) {
-    const now = new Date();
-    const kst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
-    const hkt = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong' }));
-    const cst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
-    if (!kse) kse = (kst.getDay() === 0 || kst.getDay() === 6) ? '周末休市' : '休市';
-    if (!hk)  hk  = (hkt.getDay() === 0 || hkt.getDay() === 6) ? '周末休市' : '休市';
-    if (!cn)  cn  = (cst.getDay() === 0 || cst.getDay() === 6) ? '周末休市' : '休市';
-  }
+  // 兜底：如果没有该市场的股票，用本地时间判断
+  const now = new Date();
+  if (!kse) kse = getKSTMarketStatus(now);
+  if (!hk) hk = getHKMarketStatus();
+  if (!cn) cn = getCNMarketStatus(now);
 
-  const anyOpen = [kse, hk, cn].some(v => v === '开盘中');
+  const anyOpen = [kse, hk, cn].some(v => v.includes('开盘中'));
 
-  return {
-    open: anyOpen,
-    kse,
-    hk,
-    cn,
-  };
+  return { open: anyOpen, kse, hk, cn };
+}
+
+/**
+ * 港股市场状态（本地时区判断）
+ * 港股交易时段：09:30-12:00, 13:00-16:00 HKT
+ */
+function getHKMarketStatus() {
+  const now = new Date();
+  const hkt = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong' }));
+  const day = hkt.getDay();
+  const min = hkt.getHours() * 60 + hkt.getMinutes();
+
+  if (day === 0 || day === 6) return '周末休市';
+  if (min < 570) return '盘前';              // < 09:30
+  if (min < 720) return '开盘中';              // 09:30-12:00
+  if (min < 780) return '盘中休市';            // 12:00-13:00
+  if (min < 960) return '开盘中';              // 13:00-16:00
+  return '已收盘';                            // >= 16:00
+}
+
+/**
+ * 韩股市场状态（兜底，仅在没有 Naver 数据时使用）
+ * 韩股交易时段：09:00-15:30 KST
+ */
+function getKSTMarketStatus(now) {
+  const kst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  const day = kst.getDay();
+  const min = kst.getHours() * 60 + kst.getMinutes();
+
+  if (day === 0 || day === 6) return '周末休市';
+  if (min < 540) return '盘前';              // < 09:00
+  if (min < 930) return '开盘中';              // 09:00-15:30
+  return '已收盘';                            // >= 15:30
+}
+
+/**
+ * A股市场状态（兜底，仅在没有基金数据时使用）
+ * A股交易时段：09:30-11:30, 13:00-15:00 CST
+ */
+function getCNMarketStatus(now) {
+  const cst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+  const day = cst.getDay();
+  const min = cst.getHours() * 60 + cst.getMinutes();
+
+  if (day === 0 || day === 6) return '周末休市';
+  if (min < 570) return '盘前';              // < 09:30
+  if (min < 690) return '开盘中';              // 09:30-11:30
+  if (min < 780) return '午间休市';            // 11:30-13:00
+  if (min < 900) return '开盘中';              // 13:00-15:00
+  return '已收盘';                            // >= 15:00
 }
 
 // ============================================================
@@ -437,8 +482,8 @@ export default {
 <p>查询股价时自动附带，从数据源 API 提取（无硬编码假日列表）：</p>
 <ul>
   <li>🇰🇷 韩股：Naver 返回 OPEN/CLOSE → 开盘中/休市</li>
-  <li>🇭🇰 港股：东方财富返回 f60 状态 → 开盘中/休市</li>
-  <li>🇨🇳 A股：基金净值日期=今天 → 开盘中，否则休市</li>
+  <li>🇭🇰 港股：本地时区判断（东方财富无状态字段，延迟~15分钟）</li>
+  <li>🇨🇳 A股：基金净值日期=今天 → 净值更新中</li>
 </ul>
 
 <h3>iOS 快捷指令配置</h3>
