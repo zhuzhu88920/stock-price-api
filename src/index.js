@@ -8,7 +8,7 @@
  *
  * 市场状态：
  *   韩股  → Naver API 返回 marketStatus 字段（OPEN/CLOSE）
- *   港股  → 东方财富 API 无市场状态字段，用香港时区交易时段判断
+ *   港股  → 东方财富查恒生指数实时数据判断（有价格=开盘中）
  *   A股  → 东方财富查上证指数实时数据判断（有价格=开盘中）
  *
  * 股票配置见 stocks.json，按 market/source 自动匹配抓取网址。
@@ -219,9 +219,9 @@ async function extractMarketStatus(results) {
       kse = ms === 'OPEN' ? '开盘中' : '休市';
     }
 
-    // 港股：东方财富 push2 API 没有市场状态字段，用本地时区判断
+    // 港股：通过东方财富查恒生指数实时数据判断
     if (r.source === 'eastmoney' && !hk) {
-      hk = getHKMarketStatus();
+      hk = await getHKMarketStatus();
     }
   }
 
@@ -230,7 +230,7 @@ async function extractMarketStatus(results) {
 
   // 兜底
   if (!kse) kse = getKSTMarketStatus(new Date());
-  if (!hk) hk = getHKMarketStatus();
+  if (!hk) hk = await getHKMarketStatus();
 
   const anyOpen = [kse, hk, cn].some(v => v.includes('开盘中'));
 
@@ -238,10 +238,41 @@ async function extractMarketStatus(results) {
 }
 
 /**
- * 港股市场状态（本地时区判断）
- * 港股交易时段：09:30-12:00, 13:00-16:00 HKT
+ * 港股市场状态 — 通过东方财富查恒生指数来判断
+ * 如果能拿到实时价格数据（f43>0），说明在交易中
  */
-function getHKMarketStatus() {
+async function getHKMarketStatus() {
+  try {
+    const url = 'https://push2.eastmoney.com/api/qt/stock/get?secid=100.HSI&fields=f43,f152,f170&ut=fa5fd1943c7b386f172d6893dbbd1d0c';
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+        'Referer': 'https://quote.eastmoney.com/',
+      },
+    });
+    if (!res.ok) return _hkFallbackStatus();
+    const json = await res.json();
+    if (!json.data || !json.data.f43) return _hkFallbackStatus();
+
+    const divisor = json.data.f152 || 1000;
+    const price = json.data.f43 / divisor;
+    if (price <= 0) return _hkFallbackStatus();
+
+    // 有实时价格，说明在交易中
+    const now = new Date();
+    const hkt = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong' }));
+    const day = hkt.getDay();
+    const min = hkt.getHours() * 60 + hkt.getMinutes();
+
+    if (day === 0 || day === 6) return '周末休市';
+    if (min >= 720 && min < 780) return '盘中休市';
+    return '开盘中';
+  } catch {
+    return _hkFallbackStatus();
+  }
+}
+
+function _hkFallbackStatus() {
   const now = new Date();
   const hkt = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong' }));
   const day = hkt.getDay();
@@ -508,7 +539,7 @@ export default {
 <p>查询股价时自动附带，从数据源 API 提取（无硬编码假日列表）：</p>
 <ul>
   <li>🇰🇷 韩股：Naver 返回 OPEN/CLOSE → 开盘中/休市</li>
-  <li>🇭🇰 港股：本地时区判断（东方财富无状态字段，延迟~15分钟）</li>
+  <li>🇭🇰 港股：东方财富恒生指数实时数据 → 开盘中/盘中休市/已收盘</li>
   <li>🇨🇳 A股：东方财富上证指数实时数据 → 开盘中/午间休市/已收盘</li>
 </ul>
 
