@@ -3,7 +3,7 @@ name: Deploy to Cloudflare Workers
 on:
   push:
     branches: [main]
-  workflow_dispatch:  # 允许手动触发
+  workflow_dispatch:
 
 jobs:
   test:
@@ -21,7 +21,7 @@ jobs:
 
       - name: Run API tests
         run: node test.mjs
-        continue-on-error: true  # API 可能有地域限制，测试失败不阻塞部署
+        continue-on-error: true
         env:
           NODE_TLS_REJECT_UNAUTHORIZED: '0'
 
@@ -34,7 +34,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install dependencies
         run: npm install
@@ -44,4 +44,3 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy
