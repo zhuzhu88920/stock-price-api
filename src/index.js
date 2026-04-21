@@ -273,11 +273,8 @@ export default {
         return handleCacheStatus(env);
       }
 
-      // POST 清缓存并强制重新抓取（需鉴权）
+      // 清缓存并强制重新抓取（需鉴权，GET/POST 均可）
       if (pathname === '/api/cache/refresh' || pathname === '/api/cache/refresh/') {
-        if (request.method !== 'POST') {
-          return new Response(JSON.stringify({ error: 'Method Not Allowed' }), { status: 405, headers: { 'Content-Type': 'application/json', ...CORS } });
-        }
         const token = new URL(request.url).searchParams.get('token');
         if (token !== (env.CACHE_TOKEN || 'changeme')) {
           return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: { 'Content-Type': 'application/json', ...CORS } });
