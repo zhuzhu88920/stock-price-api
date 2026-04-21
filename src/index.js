@@ -5,18 +5,26 @@
  *   韩股    → Naver Finance API
  *   港股    → 东方财富 push2 API
  *   A股基金 → 天天基金 pingzhongdata
- *   市场状态 → 东方财富指数实时数据 / Naver marketStatus
+ *   市场状态 → 交易日历日历模块（calendar.js）
+ *
+ * 缓存策略：
+ *   Cron Trigger 每 10 分钟执行 → 仅在交易时段抓取 → 写 KV
+ *   用户请求 → 始终读 KV 缓存 → 返回（含抓取时间）
  */
 
 import stockConfig from '../stocks.json';
+import { getAllMarketStatus, getUserTimestamp } from './calendar.js';
 
 const EM_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
   'Referer': 'https://quote.eastmoney.com/',
 };
 
+const KV_CACHE_KEY = 'stock_data';
+const KV_TTL = 86400; // 24 小时过期
+
 // ============================================================
-// 数据抓取
+// 数据抓取（与之前相同）
 // ============================================================
 
 async function fetchNaverStock(code) {
@@ -34,7 +42,6 @@ async function fetchNaverStock(code) {
     price: parseInt((d.closePrice || '0').replace(/,/g, ''), 10),
     change: parseInt((d.compareToPreviousClosePrice || '0').replace(/,/g, ''), 10),
     changePercent: parseFloat(d.fluctuationsRatio) || 0,
-    marketStatus: d.marketStatus || 'CLOSE',
   };
 }
 
@@ -47,11 +54,11 @@ async function fetchEastMoneyHK(code) {
   const json = await res.json();
   if (!json.data) throw new Error('EastMoney HK no data');
   const d = json.data;
-  const unit = d.f152 || 1000;
+  // 港股价格/涨跌额固定除以 1000，涨跌幅除以 100
   return {
     name: d.f58 || '',
-    price: d.f43 / unit,
-    change: d.f169 / unit,
+    price: d.f43 / 1000,
+    change: d.f169 / 1000,
     changePercent: d.f170 / 100,
   };
 }
@@ -77,87 +84,6 @@ async function fetchEastMoneyFund(code) {
   };
 }
 
-// ============================================================
-// 市场状态（通过腾讯财经API获取指数最后交易时间来判断）
-// 东方财富页面是JS渲染的，fetch拿不到状态文字
-// ============================================================
-
-/**
- * 腾讯接口返回示例（上证指数）：
- * v_sh000001="1~上证指数~000001~4085.08~4082.13~...
- *   ...~20260421154316~2.95~0.07~..."
- *
- * 最后更新时间格式：YYYYMMDDHHmmss
- * 如果最后更新时间的日期=今天 且 当前时间在交易时段内 → 交易中
- * 如果最后更新时间的日期=今天 且 当前时间已过收盘时间 → 已收盘
- * 如果最后更新时间的日期≠今天 → 休市中
- */
-async function fetchQQStatus(code, tz, closeMin) {
-  try {
-    const res = await fetch(`https://qt.gtimg.cn/q=${code}`, {
-      headers: { 'User-Agent': EM_HEADERS['User-Agent'], 'Referer': 'https://finance.qq.com/' },
-    });
-    if (!res.ok) return '未知';
-    const text = await res.text();
-
-    // A股时间格式: ~20260421154316~  港股时间格式: ~2026/04/21 16:03:11~
-    let tradeYmd, nowMin;
-    const aMatch = text.match(/~(\d{14})~/);
-    const hMatch = text.match(/~(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})/);
-
-    const now = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
-    const todayYmd = now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate();
-    nowMin = now.getHours() * 60 + now.getMinutes();
-
-    if (aMatch) {
-      const ts = aMatch[1];
-      tradeYmd = parseInt(ts.slice(0, 8));
-    } else if (hMatch) {
-      tradeYmd = parseInt(hMatch[1]) * 10000 + parseInt(hMatch[2]) * 100 + parseInt(hMatch[3]);
-    } else {
-      return '未知';
-    }
-
-    if (tradeYmd !== todayYmd) return '休市中';
-    if (nowMin >= closeMin) return '已收盘';
-    return '交易中';
-  } catch {
-    return '未知';
-  }
-}
-
-// 韩股：Naver API 直接返回 marketStatus
-async function fetchKSEStatus() {
-  try {
-    const res = await fetch(`https://m.stock.naver.com/api/stock/005930/basic`, {
-      headers: { 'User-Agent': EM_HEADERS['User-Agent'], 'Accept': 'application/json' },
-    });
-    if (!res.ok) return '未知';
-    const d = await res.json();
-    return d.marketStatus === 'OPEN' ? '交易中' : '已收盘';
-  } catch {
-    return '未知';
-  }
-}
-
-async function getMarketStatus() {
-  // A股15:00收盘(900min)，港股16:00收盘(960min)
-  const [kse, hk, cn] = await Promise.all([
-    fetchKSEStatus(),
-    fetchQQStatus('hkHSI', 'Asia/Hong_Kong', 960),
-    fetchQQStatus('sh000001', 'Asia/Shanghai', 900),
-  ]);
-
-  return {
-    kse, hk, cn,
-    summary: `韩:${kse} | 港:${hk} | A:${cn}`,
-  };
-}
-
-// ============================================================
-// 统一抓取 + 排版
-// ============================================================
-
 async function fetchStockData(stock) {
   try {
     const raw = await (
@@ -180,6 +106,10 @@ async function fetchStockData(stock) {
   }
 }
 
+// ============================================================
+// 排版
+// ============================================================
+
 function formatTicker(stock) {
   if (!stock.success) return `${stock.emoji} ${stock.name} — ❌ ${stock.error}`;
 
@@ -198,21 +128,71 @@ function formatTicker(stock) {
   return `${stock.emoji} ${stock.name} (${stock.code}.${stock.market.toUpperCase()})\n💰 ${sym}${priceStr}\n📊 ${sign(stock.changePercent)}% ${dir}`;
 }
 
-function buildTextResponse(results, market) {
-  const ts = new Date().toLocaleString('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  });
+function buildTextResponse(results, market, fetchTime) {
+  const ts = getUserTimestamp();
   const ok = results.filter(r => r.success).length;
   const fail = results.length - ok;
   return [
     `📊 股价查询 - ${ts}`,
     `🏦 ${market.summary}  |  ✅${ok} ❌${fail}`,
+    `🕐 数据抓取时间: ${fetchTime}`,
     '────────────────',
     '',
     results.map(formatTicker).join('\n\n'),
   ].join('\n');
+}
+
+// ============================================================
+// KV 缓存读写
+// ============================================================
+
+async function readCache(env) {
+  try {
+    const cached = await env.STOCK_CACHE.get(KV_CACHE_KEY, 'json');
+    return cached || null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCache(env, data) {
+  try {
+    await env.STOCK_CACHE.put(KV_CACHE_KEY, JSON.stringify(data), {
+      expirationTtl: KV_TTL,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ============================================================
+// 抓取逻辑（Cron 和 fallback 共用）
+// ============================================================
+
+async function fetchAndCache(env, force = false) {
+  const market = getAllMarketStatus();
+
+  // Cron 模式：没有任何市场在交易时跳过；force 模式（用户请求触发）则无视
+  if (!force && !market.anyTrading) {
+    return { skipped: true, reason: '所有市场休市', market };
+  }
+
+  const results = await Promise.allSettled(stockConfig.map(s => fetchStockData(s)));
+  const stocks = results.map(r => r.status === 'fulfilled' ? r.value : { success: false, error: r.reason?.message });
+
+  const fetchTime = getUserTimestamp();
+  const cacheData = {
+    stocks,
+    market,
+    fetchTime,
+    fetchIso: new Date().toISOString(),
+  };
+
+  // 写入 KV
+  const cached = await writeCache(env, cacheData);
+
+  return { ...cacheData, cached };
 }
 
 // ============================================================
@@ -225,25 +205,70 @@ const CORS = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
-async function handlePrices(isText) {
-  const [results, market] = await Promise.all([
-    Promise.allSettled(stockConfig.map(s => fetchStockData(s))),
-    getMarketStatus(),
-  ]);
-  const data = results.map(r => r.status === 'fulfilled' ? r.value : { success: false, error: r.reason?.message });
+async function handlePrices(isText, env) {
+  const market = getAllMarketStatus();
+  let cached = await readCache(env);
+
+  // 如果没有缓存，强制抓取一次（无论是否交易时段）
+  if (!cached) {
+    const result = await fetchAndCache(env, true);
+    if (!result.skipped) {
+      cached = result;
+    }
+  }
+
+  if (!cached) {
+    // 仍然没有数据（所有市场休市且无历史缓存）
+    const ts = getUserTimestamp();
+    const body = isText
+      ? `📊 股价查询 - ${ts}\n🏦 ${market.summary}\n⚠️ 暂无缓存数据（所有市场休市中，等待交易日积累数据）`
+      : JSON.stringify({ status: 'no_data', timestamp: ts, market, message: '暂无缓存数据' }, null, 2);
+
+    return new Response(body, {
+      headers: { 'Content-Type': isText ? 'text/plain; charset=utf-8' : 'application/json; charset=utf-8', ...CORS },
+    });
+  }
 
   if (isText) {
-    return new Response(buildTextResponse(data, market), {
+    return new Response(buildTextResponse(cached.stocks, market, cached.fetchTime), {
       headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS },
     });
   }
-  return new Response(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString(), market, stocks: data }, null, 2), {
+
+  return new Response(JSON.stringify({
+    status: 'ok',
+    timestamp: getUserTimestamp(),
+    fetchTime: cached.fetchTime,
+    fetchIso: cached.fetchIso,
+    market,
+    stocks: cached.stocks,
+  }, null, 2), {
+    headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS },
+  });
+}
+
+async function handleCacheStatus(env) {
+  const market = getAllMarketStatus();
+  const cached = await readCache(env);
+
+  return new Response(JSON.stringify({
+    hasCache: !!cached,
+    fetchTime: cached?.fetchTime || null,
+    fetchIso: cached?.fetchIso || null,
+    stockCount: cached?.stocks?.length || 0,
+    successCount: cached?.stocks?.filter(s => s.success).length || 0,
+    market,
+    anyTrading: market.anyTrading,
+  }, null, 2), {
     headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS },
   });
 }
 
 export default {
-  async fetch(request) {
+  /**
+   * 用户请求处理
+   */
+  async fetch(request, env) {
     const { pathname } = new URL(request.url);
 
     if (request.method === 'OPTIONS') {
@@ -251,8 +276,29 @@ export default {
     }
 
     try {
-      if (pathname === '/api/prices' || pathname === '/api/prices/') return handlePrices(false);
-      if (pathname === '/api/prices/text' || pathname === '/api/prices/text/') return handlePrices(true);
+      if (pathname === '/api/prices' || pathname === '/api/prices/') return handlePrices(false, env);
+      if (pathname === '/api/prices/text' || pathname === '/api/prices/text/') return handlePrices(true, env);
+
+      if (pathname === '/api/cache/status' || pathname === '/api/cache/status/') {
+        return handleCacheStatus(env);
+      }
+
+      // POST 清缓存并强制重新抓取
+      if (pathname === '/api/cache/refresh' || pathname === '/api/cache/refresh/') {
+        if (request.method !== 'POST') {
+          return new Response(JSON.stringify({ error: 'Method Not Allowed' }), { status: 405, headers: { 'Content-Type': 'application/json', ...CORS } });
+        }
+        await env.STOCK_CACHE.delete(KV_CACHE_KEY);
+        const result = await fetchAndCache(env, true);
+        if (result.skipped) {
+          return new Response(JSON.stringify({ status: 'skipped', reason: result.reason, market: result.market }, null, 2), {
+            headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS },
+          });
+        }
+        return new Response(JSON.stringify({ status: 'ok', fetchTime: result.fetchTime, stocks: result.stocks.length, success: result.stocks.filter(s => s.success).length }, null, 2), {
+          headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS },
+        });
+      }
 
       if (pathname === '/api/stocks' || pathname === '/api/stocks/') {
         return new Response(JSON.stringify({
@@ -277,16 +323,32 @@ export default {
 </head>
 <body>
 <h1>📊 Stock Price API</h1>
-<p>股票/基金实时行情查询，支持韩股、港股、A股基金。</p>
+<p>股票/基金实时行情查询，支持韩股、港股、A股基金。数据每 10 分钟自动更新（交易时段）。</p>
 <div class="endpoint"><span class="method">GET</span> <code>/api/prices</code> — JSON</div>
 <div class="endpoint"><span class="method">GET</span> <code>/api/prices/text</code> — 纯文本</div>
 <div class="endpoint"><span class="method">GET</span> <code>/api/stocks</code> — 股票列表</div>
+<div class="endpoint"><span class="method">GET</span> <code>/api/cache/status</code> — 缓存状态</div>
 </body></html>`, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       }
 
       return new Response(JSON.stringify({ error: 'Not Found' }), { status: 404, headers: { 'Content-Type': 'application/json', ...CORS } });
     } catch (err) {
       return new Response(JSON.stringify({ error: 'Internal Server Error', message: err.message }), { status: 500, headers: { 'Content-Type': 'application/json', ...CORS } });
+    }
+  },
+
+  /**
+   * Cron Trigger — 每 10 分钟执行
+   * 仅在任意市场交易时段时才抓取数据并写入 KV
+   */
+  async scheduled(event, env) {
+    const result = await fetchAndCache(env);
+
+    if (result.skipped) {
+      console.log(`[Cron] 跳过: ${result.reason}`);
+    } else {
+      const ok = result.stocks.filter(s => s.success).length;
+      console.log(`[Cron] 抓取完成: ${ok}/${result.stocks.length} 成功, 缓存=${result.cached}`);
     }
   },
 };
