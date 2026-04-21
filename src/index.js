@@ -78,25 +78,55 @@ async function fetchEastMoneyFund(code) {
 }
 
 // ============================================================
-// 市场状态（抓取页面上的状态文字，原样显示）
+// 市场状态（通过腾讯财经API获取指数最后交易时间来判断）
+// 东方财富页面是JS渲染的，fetch拿不到状态文字
 // ============================================================
 
-// 从东方财富指数页面抓取状态文字
-async function fetchEMPageStatus(url) {
+/**
+ * 腾讯接口返回示例（上证指数）：
+ * v_sh000001="1~上证指数~000001~4085.08~4082.13~...
+ *   ...~20260421154316~2.95~0.07~..."
+ *
+ * 最后更新时间格式：YYYYMMDDHHmmss
+ * 如果最后更新时间的日期=今天 且 当前时间在交易时段内 → 交易中
+ * 如果最后更新时间的日期=今天 且 当前时间已过收盘时间 → 已收盘
+ * 如果最后更新时间的日期≠今天 → 休市中
+ */
+async function fetchQQStatus(code, tz, closeMin) {
   try {
-    const res = await fetch(url, { headers: EM_HEADERS });
+    const res = await fetch(`https://qt.gtimg.cn/q=${code}`, {
+      headers: { 'User-Agent': EM_HEADERS['User-Agent'], 'Referer': 'https://finance.qq.com/' },
+    });
     if (!res.ok) return '未知';
-    const html = await res.text();
-    if (html.includes('交易中')) return '交易中';
-    if (html.includes('已收盘')) return '已收盘';
-    if (html.includes('休市中')) return '休市中';
-    return '未知';
+    const text = await res.text();
+
+    // A股时间格式: ~20260421154316~  港股时间格式: ~2026/04/21 16:03:11~
+    let tradeYmd, nowMin;
+    const aMatch = text.match(/~(\d{14})~/);
+    const hMatch = text.match(/~(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}):(\d{2})/);
+
+    const now = new Date(new Date().toLocaleString('en-US', { timeZone: tz }));
+    const todayYmd = now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate();
+    nowMin = now.getHours() * 60 + now.getMinutes();
+
+    if (aMatch) {
+      const ts = aMatch[1];
+      tradeYmd = parseInt(ts.slice(0, 8));
+    } else if (hMatch) {
+      tradeYmd = parseInt(hMatch[1]) * 10000 + parseInt(hMatch[2]) * 100 + parseInt(hMatch[3]);
+    } else {
+      return '未知';
+    }
+
+    if (tradeYmd !== todayYmd) return '休市中';
+    if (nowMin >= closeMin) return '已收盘';
+    return '交易中';
   } catch {
     return '未知';
   }
 }
 
-// 韩股：Naver API 返回 OPEN/CLOSE
+// 韩股：Naver API 直接返回 marketStatus
 async function fetchKSEStatus() {
   try {
     const res = await fetch(`https://m.stock.naver.com/api/stock/005930/basic`, {
@@ -111,10 +141,11 @@ async function fetchKSEStatus() {
 }
 
 async function getMarketStatus() {
+  // A股15:00收盘(900min)，港股16:00收盘(960min)
   const [kse, hk, cn] = await Promise.all([
     fetchKSEStatus(),
-    fetchEMPageStatus('https://quote.eastmoney.com/gb/zsHSI.html'),
-    fetchEMPageStatus('https://quote.eastmoney.com/zs000001.html'),
+    fetchQQStatus('hkHSI', 'Asia/Hong_Kong', 960),
+    fetchQQStatus('sh000001', 'Asia/Shanghai', 900),
   ]);
 
   return {
