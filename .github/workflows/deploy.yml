@@ -50,4 +50,4 @@ jobs:
           echo "✅ Both secrets are set (lengths: TOKEN=${#CLOUDFLARE_API_TOKEN}, ACCOUNT=${#CLOUDFLARE_ACCOUNT_ID})"
 
       - name: Deploy to Cloudflare Workers
-        run: npx wrangler deploy --verbose 2>&1
+        run: npx wrangler deploy 2>&1
