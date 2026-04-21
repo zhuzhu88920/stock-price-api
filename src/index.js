@@ -1,569 +1,267 @@
 /**
  * Stock Price API — Cloudflare Worker
- * 
+ *
  * 数据源：
- *   韩股    → Naver Finance API (m.stock.naver.com)
- *   港股    → 东方财富 push2 API (push2.eastmoney.com)
- *   A股基金 → 天天基金 pingzhongdata (fund.eastmoney.com)
- *
- * 市场状态：
- *   韩股  → Naver API 返回 marketStatus 字段（OPEN/CLOSE）
- *   港股  → 东方财富查恒生指数实时数据判断（有价格=开盘中）
- *   A股  → 东方财富查上证指数实时数据判断（有价格=开盘中）
- *
- * 股票配置见 stocks.json，按 market/source 自动匹配抓取网址。
+ *   韩股    → Naver Finance API
+ *   港股    → 东方财富 push2 API
+ *   A股基金 → 天天基金 pingzhongdata
+ *   市场状态 → 东方财富指数实时数据 / Naver marketStatus
  */
 
 import stockConfig from '../stocks.json';
 
+const EM_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+  'Referer': 'https://quote.eastmoney.com/',
+};
+
 // ============================================================
-// 数据抓取：韩股 — Naver Finance API
+// 数据抓取
 // ============================================================
 
 async function fetchNaverStock(code) {
-  const url = `https://m.stock.naver.com/api/stock/${code}/basic`;
-  const res = await fetch(url, {
+  const res = await fetch(`https://m.stock.naver.com/api/stock/${code}/basic`, {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+      'User-Agent': EM_HEADERS['User-Agent'],
       'Accept': 'application/json',
       'Referer': `https://m.stock.naver.com/item/main.naver?code=${code}`,
     },
   });
-  if (!res.ok) throw new Error(`Naver API ${res.status} for ${code}`);
-
-  const data = await res.json();
-
-  const priceStr = data.closePrice || '0';
-  const price = parseInt(priceStr.replace(/,/g, ''), 10);
-  const changeStr = data.compareToPreviousClosePrice || '0';
-  const change = parseInt(changeStr.replace(/,/g, ''), 10);
-  const changePercent = parseFloat(data.fluctuationsRatio) || 0;
-  const marketStatus = data.marketStatus || 'CLOSE';
-  const stockName = data.stockName || '';
-  const updateTime = data.localTradedAt || '';
-
+  if (!res.ok) throw new Error(`Naver API ${res.status}`);
+  const d = await res.json();
   return {
-    name: stockName,
-    price,
-    change,
-    changePercent,
-    marketStatus,
-    updateTime,
+    name: d.stockName || '',
+    price: parseInt((d.closePrice || '0').replace(/,/g, ''), 10),
+    change: parseInt((d.compareToPreviousClosePrice || '0').replace(/,/g, ''), 10),
+    changePercent: parseFloat(d.fluctuationsRatio) || 0,
+    marketStatus: d.marketStatus || 'CLOSE',
   };
 }
-
-// ============================================================
-// 数据抓取：港股 — 东方财富 push2 API
-// ============================================================
 
 async function fetchEastMoneyHK(code) {
-  const secid = `116.${code}`;
-  const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f169,f170&ut=fa5fd1943c7b386f172d6893dbbd1d0c`;
-
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
-      'Referer': 'https://quote.eastmoney.com/',
-    },
-  });
-  if (!res.ok) throw new Error(`EastMoney HK API ${res.status} for ${code}`);
-
+  const res = await fetch(
+    `https://push2.eastmoney.com/api/qt/stock/get?secid=116.${code}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f152,f169,f170&ut=fa5fd1943c7b386f172d6893dbbd1d0c`,
+    { headers: EM_HEADERS },
+  );
+  if (!res.ok) throw new Error(`EastMoney HK API ${res.status}`);
   const json = await res.json();
-  if (!json.data) throw new Error(`EastMoney HK no data for ${code}`);
-
+  if (!json.data) throw new Error('EastMoney HK no data');
   const d = json.data;
-
-  const price = d.f43 / 1000;
-  const change = d.f169 / 100;
-  const changePercent = d.f170 / 100;
-  const name = d.f58 || '';
-  const high = d.f44 / 1000;
-  const low = d.f45 / 1000;
-  const open = d.f46 / 1000;
-  const volume = d.f47;
-  const turnover = d.f48;
-  // f60 是昨收价，不是市场状态。港股状态用本地时区判断。
-
+  const unit = d.f152 || 1000;
   return {
-    name,
-    price,
-    change,
-    changePercent,
-    high,
-    low,
-    open,
-    volume,
-    turnover,
+    name: d.f58 || '',
+    price: d.f43 / unit,
+    change: d.f169 / unit,
+    changePercent: d.f170 / 100,
   };
 }
-
-// ============================================================
-// 数据抓取：A股基金 — 东方财富正式净值接口
-// ============================================================
 
 async function fetchEastMoneyFund(code) {
-  const detailUrl = `https://fund.eastmoney.com/pingzhongdata/${code}.js?v=${Date.now()}`;
-  const detailRes = await fetch(detailUrl, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
-      'Referer': `https://fund.eastmoney.com/${code}.html`,
-    },
+  const res = await fetch(`https://fund.eastmoney.com/pingzhongdata/${code}.js?v=${Date.now()}`, {
+    headers: EM_HEADERS,
   });
-  if (!detailRes.ok) throw new Error(`EastMoney Fund detail API ${detailRes.status} for ${code}`);
-
-  const detailText = await detailRes.text();
-
-  const trendMatch = detailText.match(/var Data_netWorthTrend\s*=\s*(\[[\s\S]*?\]);/);
-  const nameMatch = detailText.match(/var fS_name\s*=\s*"([^"]+)"/);
-
-  const fundName = nameMatch ? nameMatch[1] : '';
-
-  if (!trendMatch) throw new Error(`无法解析基金 ${code} 的净值数据`);
-
+  if (!res.ok) throw new Error(`天天基金 API ${res.status}`);
+  const text = await res.text();
+  const trendMatch = text.match(/var Data_netWorthTrend\s*=\s*(\[[\s\S]*?\]);/);
+  const nameMatch = text.match(/var fS_name\s*=\s*"([^"]+)"/);
+  if (!trendMatch) throw new Error('无法解析基金净值');
   const trend = JSON.parse(trendMatch[1]);
-  if (!trend || trend.length === 0) throw new Error(`基金 ${code} 无净值数据`);
-
+  if (!trend.length) throw new Error('基金无净值数据');
   const latest = trend[trend.length - 1];
-  const latestNav = latest.y;
-  const latestChangePercent = latest.equityReturn;
-  const navDate = new Date(latest.x).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
-
   return {
-    name: fundName,
-    nav: latestNav,
-    price: latestNav,
-    changePercent: latestChangePercent !== null ? parseFloat(latestChangePercent.toFixed(2)) : null,
-    navDate: navDate,
+    name: nameMatch?.[1] || '',
+    nav: latest.y,
+    price: latest.y,
+    changePercent: latest.equityReturn !== null ? parseFloat(latest.equityReturn.toFixed(2)) : null,
+    navDate: new Date(latest.x).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }),
   };
 }
 
 // ============================================================
-// 统一抓取入口
+// 市场状态（从网页抓取指数实时数据，无兜底）
+// ============================================================
+
+// 通过东方财富指数是否有实时价格判断市场是否开盘
+async function fetchIndexOpen(secid) {
+  try {
+    const res = await fetch(
+      `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f170,f171&ut=fa5fd1943c7b386f172d6893dbbd1d0c`,
+      { headers: EM_HEADERS },
+    );
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (!json.data) return null;
+    // f170>0 表示有实时价格变动 → 开盘中
+    return json.data.f170 > 0;
+  } catch {
+    return null;
+  }
+}
+
+// 韩股：Naver API 直接返回 marketStatus
+async function fetchKSEStatus() {
+  try {
+    const res = await fetch(`https://m.stock.naver.com/api/stock/005930/basic`, {
+      headers: { 'User-Agent': EM_HEADERS['User-Agent'], 'Accept': 'application/json' },
+    });
+    if (!res.ok) return null;
+    const d = await res.json();
+    return d.marketStatus === 'OPEN' ? '开盘中' : '已收盘';
+  } catch {
+    return null;
+  }
+}
+
+async function getMarketStatus() {
+  const [kse, hk, cn] = await Promise.all([
+    fetchKSEStatus(),
+    fetchIndexOpen('100.HSI'),
+    fetchIndexOpen('1.000001'),
+  ]);
+
+  const fmt = (label, val) => val === null ? `${label}:?` : val ? `${label}:开` : `${label}:收`;
+
+  return {
+    kse: kse ?? '未知',
+    hk: hk === null ? '未知' : hk ? '开盘中' : '已收盘',
+    cn: cn === null ? '未知' : cn ? '开盘中' : '已收盘',
+    summary: [fmt('韩', kse === '开盘中'), fmt('港', hk), fmt('A', cn)].join(' | '),
+  };
+}
+
+// ============================================================
+// 统一抓取 + 排版
 // ============================================================
 
 async function fetchStockData(stock) {
-  const { source, code } = stock;
-
   try {
-    let rawData;
-    switch (source) {
-      case 'naver':
-        rawData = await fetchNaverStock(code);
-        return {
-          ...stock,
-          success: true,
-          price: rawData.price,
-          change: rawData.change,
-          changePercent: rawData.changePercent,
-          extra: {
-            marketStatus: rawData.marketStatus,
-            updateTime: rawData.updateTime,
-            rawName: rawData.name,
-          },
-        };
+    const raw = await (
+      stock.source === 'naver' ? fetchNaverStock
+        : stock.source === 'eastmoney' ? fetchEastMoneyHK
+          : stock.source === 'eastmoney_fund' ? fetchEastMoneyFund
+            : () => { throw new Error(`Unknown source: ${stock.source}`); }
+    )(stock.code);
 
-      case 'eastmoney':
-        rawData = await fetchEastMoneyHK(code);
-        return {
-          ...stock,
-          success: true,
-          price: rawData.price,
-          change: rawData.change,
-          changePercent: rawData.changePercent,
-          extra: {
-            marketStatus: rawData.marketStatus,
-            high: rawData.high,
-            low: rawData.low,
-            open: rawData.open,
-            volume: rawData.volume,
-            rawName: rawData.name,
-          },
-        };
-
-      case 'eastmoney_fund':
-        rawData = await fetchEastMoneyFund(code);
-        return {
-          ...stock,
-          success: true,
-          price: rawData.price,
-          change: null,
-          changePercent: rawData.changePercent,
-          extra: {
-            nav: rawData.nav,
-            navDate: rawData.navDate,
-            rawName: rawData.name,
-          },
-        };
-
-      default:
-        return { ...stock, success: false, error: `Unknown source: ${source}` };
-    }
+    return {
+      ...stock,
+      success: true,
+      price: raw.price,
+      change: raw.change ?? null,
+      changePercent: raw.changePercent ?? null,
+      navDate: raw.navDate || null,
+    };
   } catch (err) {
     return { ...stock, success: false, error: err.message };
   }
 }
 
-// ============================================================
-// 市场状态：从抓取结果中提取（数据源说的算）
-// ============================================================
-
-async function extractMarketStatus(results) {
-  let kse = null, hk = null, cn = null;
-
-  for (const r of results) {
-    if (!r.success) continue;
-
-    // 韩股：Naver API 直接返回 marketStatus
-    if (r.source === 'naver' && !kse) {
-      const ms = r.extra?.marketStatus;
-      kse = ms === 'OPEN' ? '开盘中' : '休市';
-    }
-
-    // 港股：通过东方财富查恒生指数实时数据判断
-    if (r.source === 'eastmoney' && !hk) {
-      hk = await getHKMarketStatus();
-    }
-  }
-
-  // A股：通过东方财富查上证指数实时数据来判断
-  cn = await getCNMarketStatus();
-
-  // 兜底
-  if (!kse) kse = getKSTMarketStatus(new Date());
-  if (!hk) hk = await getHKMarketStatus();
-
-  const anyOpen = [kse, hk, cn].some(v => v.includes('开盘中'));
-
-  return { open: anyOpen, kse, hk, cn };
-}
-
-/**
- * 港股市场状态 — 通过东方财富查恒生指数来判断
- * 如果能拿到实时价格数据（f43>0），说明在交易中
- */
-async function getHKMarketStatus() {
-  try {
-    const url = 'https://push2.eastmoney.com/api/qt/stock/get?secid=100.HSI&fields=f43,f152,f170&ut=fa5fd1943c7b386f172d6893dbbd1d0c';
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
-        'Referer': 'https://quote.eastmoney.com/',
-      },
-    });
-    if (!res.ok) return _hkFallbackStatus();
-    const json = await res.json();
-    if (!json.data || !json.data.f43) return _hkFallbackStatus();
-
-    const divisor = json.data.f152 || 1000;
-    const price = json.data.f43 / divisor;
-    if (price <= 0) return _hkFallbackStatus();
-
-    // 有实时价格，说明在交易中
-    const now = new Date();
-    const hkt = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong' }));
-    const day = hkt.getDay();
-    const min = hkt.getHours() * 60 + hkt.getMinutes();
-
-    if (day === 0 || day === 6) return '周末休市';
-    if (min >= 720 && min < 780) return '盘中休市';
-    return '开盘中';
-  } catch {
-    return _hkFallbackStatus();
-  }
-}
-
-function _hkFallbackStatus() {
-  const now = new Date();
-  const hkt = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Hong_Kong' }));
-  const day = hkt.getDay();
-  const min = hkt.getHours() * 60 + hkt.getMinutes();
-
-  if (day === 0 || day === 6) return '周末休市';
-  if (min < 570) return '盘前';              // < 09:30
-  if (min < 720) return '开盘中';              // 09:30-12:00
-  if (min < 780) return '盘中休市';            // 12:00-13:00
-  if (min < 960) return '开盘中';              // 13:00-16:00
-  return '已收盘';                            // >= 16:00
-}
-
-/**
- * 韩股市场状态（兜底，仅在没有 Naver 数据时使用）
- * 韩股交易时段：09:00-15:30 KST
- */
-function getKSTMarketStatus(now) {
-  const kst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
-  const day = kst.getDay();
-  const min = kst.getHours() * 60 + kst.getMinutes();
-
-  if (day === 0 || day === 6) return '周末休市';
-  if (min < 540) return '盘前';              // < 09:00
-  if (min < 930) return '开盘中';              // 09:00-15:30
-  return '已收盘';                            // >= 15:30
-}
-
-/**
- * A股市场状态 — 通过东方财富查上证指数来判断
- * 如果能拿到实时价格数据（f43>0），说明在交易中
- */
-async function getCNMarketStatus() {
-  try {
-    const url = 'https://push2.eastmoney.com/api/qt/stock/get?secid=1.000001&fields=f43,f152,f170&ut=fa5fd1943c7b386f172d6893dbbd1d0c';
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
-        'Referer': 'https://quote.eastmoney.com/',
-      },
-    });
-    if (!res.ok) return _cnFallbackStatus();
-    const json = await res.json();
-    if (!json.data || !json.data.f43) return _cnFallbackStatus();
-
-    const price = json.data.f43 / json.data.f152; // f152=小数位除数
-    if (price <= 0) return _cnFallbackStatus();
-
-    // 有实时价格，说明在交易中（含午间休市）
-    const now = new Date();
-    const cst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
-    const day = cst.getDay();
-    const min = cst.getHours() * 60 + cst.getMinutes();
-
-    if (day === 0 || day === 6) return '周末休市';
-    if (min >= 690 && min < 780) return '午间休市';
-    return '开盘中';
-  } catch {
-    return _cnFallbackStatus();
-  }
-}
-
-function _cnFallbackStatus() {
-  const now = new Date();
-  const cst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
-  const day = cst.getDay();
-  const min = cst.getHours() * 60 + cst.getMinutes();
-
-  if (day === 0 || day === 6) return '周末休市';
-  if (min < 570) return '盘前';
-  if (min < 690) return '开盘中';
-  if (min < 780) return '午间休市';
-  if (min < 900) return '开盘中';
-  return '已收盘';
-}
-
-// ============================================================
-// 响应格式化
-// ============================================================
-
 function formatTicker(stock) {
-  if (!stock.success) {
-    return `${stock.emoji} ${stock.name} (${stock.code}) — ❌ 抓取失败: ${stock.error}`;
-  }
+  if (!stock.success) return `${stock.emoji} ${stock.name} — ❌ ${stock.error}`;
 
   const dir = stock.changePercent > 0 ? '📈' : stock.changePercent < 0 ? '📉' : '➡️';
-  const sign = (v) => (v >= 0 ? '+' : '') + v;
+  const sign = v => (v >= 0 ? '+' : '') + v;
 
   if (stock.source === 'eastmoney_fund') {
-    return [
-      `${stock.emoji} ${stock.name} (${stock.code})`,
-      `💰 净值: ${stock.price.toFixed(4)}  |  日期: ${stock.extra.navDate}`,
-      `📊 涨跌: ${sign(stock.changePercent !== null ? stock.changePercent.toFixed(2) : 'N/A')}% ${dir}`,
-    ].join('\n');
+    return `${stock.emoji} ${stock.name}\n💰 净值: ${stock.price.toFixed(4)}  |  ${stock.navDate}\n📊 ${sign(stock.changePercent ?? 0)}% ${dir}`;
   }
 
-  const currencySymbols = { KRW: '₩', HKD: 'HK$', CNY: '¥' };
-  const sym = currencySymbols[stock.currency] || '';
+  const sym = { KRW: '₩', HKD: 'HK$', CNY: '¥' }[stock.currency] || '';
   const priceStr = stock.currency === 'KRW'
     ? stock.price.toLocaleString()
     : stock.price.toFixed(stock.price < 1 ? 4 : 2);
 
+  return `${stock.emoji} ${stock.name} (${stock.code}.${stock.market.toUpperCase()})\n💰 ${sym}${priceStr}\n📊 ${sign(stock.changePercent)}% ${dir}`;
+}
+
+function buildTextResponse(results, market) {
+  const ts = new Date().toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  });
+  const ok = results.filter(r => r.success).length;
+  const fail = results.length - ok;
   return [
-    `${stock.emoji} ${stock.name} (${stock.code}.${stock.market.toUpperCase()})`,
-    `💰 价格: ${sym}${priceStr}`,
-    `📊 涨跌: ${sign(stock.changePercent.toFixed(2))}% ${dir}`,
+    `📊 股价查询 - ${ts}`,
+    `🏦 ${market.summary}  |  ✅${ok} ❌${fail}`,
+    '────────────────',
+    '',
+    results.map(formatTicker).join('\n\n'),
   ].join('\n');
 }
 
-function buildTextResponse(results, marketStatus) {
-  const timestamp = new Date().toLocaleString('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-    hour12: false,
+// ============================================================
+// 路由
+// ============================================================
+
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
+
+async function handlePrices(isText) {
+  const [results, market] = await Promise.all([
+    Promise.allSettled(stockConfig.map(s => fetchStockData(s))),
+    getMarketStatus(),
+  ]);
+  const data = results.map(r => r.status === 'fulfilled' ? r.value : { success: false, error: r.reason?.message });
+
+  if (isText) {
+    return new Response(buildTextResponse(data, market), {
+      headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS },
+    });
+  }
+  return new Response(JSON.stringify({ status: 'ok', timestamp: new Date().toISOString(), market, stocks: data }, null, 2), {
+    headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS },
   });
-
-  const successCount = results.filter(r => r.success).length;
-  const failCount = results.filter(r => !r.success).length;
-
-  let msg = `📊 股价查询 - ${timestamp}\n`;
-  msg += `🏦 韩国:${marketStatus.kse} | 香港:${marketStatus.hk} | A股:${marketStatus.cn}\n`;
-  msg += `✅ ${successCount}成功 / ❌ ${failCount}失败\n`;
-  msg += '────────────────\n\n';
-  msg += results.map(formatTicker).join('\n\n');
-
-  return msg;
 }
-
-// ============================================================
-// CORS helper
-// ============================================================
-
-function corsHeaders() {
-  return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-  };
-}
-
-// ============================================================
-// Cloudflare Worker 入口
-// ============================================================
 
 export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const path = url.pathname;
+  async fetch(request) {
+    const { pathname } = new URL(request.url);
 
     if (request.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders() });
+      return new Response(null, { status: 204, headers: CORS });
     }
 
     try {
-      // GET /api/prices — JSON
-      if (path === '/api/prices' || path === '/api/prices/') {
-        const results = await Promise.allSettled(
-          stockConfig.map(stock => fetchStockData(stock))
-        );
-        const data = results.map(r =>
-          r.status === 'fulfilled' ? r.value : { success: false, error: r.reason?.message }
-        );
-        const marketStatus = await extractMarketStatus(data);
+      if (pathname === '/api/prices' || pathname === '/api/prices/') return handlePrices(false);
+      if (pathname === '/api/prices/text' || pathname === '/api/prices/text/') return handlePrices(true);
 
-        return new Response(JSON.stringify({
-          status: 'ok',
-          timestamp: new Date().toISOString(),
-          market: marketStatus,
-          stocks: data,
-        }, null, 2), {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json; charset=utf-8',
-            ...corsHeaders(),
-          },
-        });
-      }
-
-      // GET /api/prices/text — 纯文本
-      if (path === '/api/prices/text' || path === '/api/prices/text/') {
-        const results = await Promise.allSettled(
-          stockConfig.map(stock => fetchStockData(stock))
-        );
-        const data = results.map(r =>
-          r.status === 'fulfilled' ? r.value : { success: false, error: r.reason?.message }
-        );
-        const marketStatus = await extractMarketStatus(data);
-        const text = buildTextResponse(data, marketStatus);
-
-        return new Response(text, {
-          status: 200,
-          headers: {
-            'Content-Type': 'text/plain; charset=utf-8',
-            ...corsHeaders(),
-          },
-        });
-      }
-
-      // GET /api/stocks — 配置列表
-      if (path === '/api/stocks' || path === '/api/stocks/') {
+      if (pathname === '/api/stocks' || pathname === '/api/stocks/') {
         return new Response(JSON.stringify({
           count: stockConfig.length,
-          stocks: stockConfig.map(s => ({
-            name: s.name,
-            code: s.code,
-            market: s.market,
-            source: s.source,
-          })),
-        }, null, 2), {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json; charset=utf-8',
-            ...corsHeaders(),
-          },
-        });
+          stocks: stockConfig.map(({ name, code, market, source }) => ({ name, code, market, source })),
+        }, null, 2), { headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS } });
       }
 
-      // GET / — 说明页
-      if (path === '/' || path === '/index.html') {
-        const html = `<!DOCTYPE html>
+      if (pathname === '/' || pathname === '/index.html') {
+        return new Response(`<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Stock Price API</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; background: #0d1117; color: #c9d1d9; }
-  h1 { color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 10px; }
-  code { background: #161b22; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
-  pre { background: #161b22; padding: 16px; border-radius: 8px; overflow-x: auto; border: 1px solid #30363d; }
-  a { color: #58a6ff; }
-  .endpoint { margin: 16px 0; padding: 12px; background: #161b22; border-radius: 8px; border-left: 3px solid #58a6ff; }
-  .method { color: #7ee787; font-weight: bold; }
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:600px;margin:40px auto;padding:0 20px;background:#0d1117;color:#c9d1d9}
+  h1{color:#58a6ff;border-bottom:1px solid #30363d;padding-bottom:10px}
+  code{background:#161b22;padding:2px 6px;border-radius:4px;font-size:.9em}
+  .endpoint{margin:16px 0;padding:12px;background:#161b22;border-radius:8px;border-left:3px solid #58a6ff}
+  .method{color:#7ee787;font-weight:bold}
 </style>
 </head>
 <body>
 <h1>📊 Stock Price API</h1>
-<p>股票/基金实时行情查询 API，支持韩股、港股、A股基金。</p>
-
-<div class="endpoint">
-  <span class="method">GET</span> <code>/api/prices</code><br>
-  <p>JSON 格式返回所有股票行情（含市场状态）</p>
-</div>
-
-<div class="endpoint">
-  <span class="method">GET</span> <code>/api/prices/text</code><br>
-  <p>纯文本格式，适合 iOS 快捷指令 / Telegram</p>
-</div>
-
-<div class="endpoint">
-  <span class="method">GET</span> <code>/api/stocks</code><br>
-  <p>已配置的股票列表</p>
-</div>
-
-<h3>数据源</h3>
-<ul>
-  <li>🇰🇷 韩股 → Naver Finance</li>
-  <li>🇭🇰 港股 → 东方财富</li>
-  <li>🇨🇳 基金 → 天天基金</li>
-</ul>
-
-<h3>市场状态</h3>
-<p>查询股价时自动附带，从数据源 API 提取（无硬编码假日列表）：</p>
-<ul>
-  <li>🇰🇷 韩股：Naver 返回 OPEN/CLOSE → 开盘中/休市</li>
-  <li>🇭🇰 港股：东方财富恒生指数实时数据 → 开盘中/盘中休市/已收盘</li>
-  <li>🇨🇳 A股：东方财富上证指数实时数据 → 开盘中/午间休市/已收盘</li>
-</ul>
-
-<h3>iOS 快捷指令配置</h3>
-<p>在"获取 URL 内容"中填入：</p>
-<pre><code>https://your-worker.your-name.workers.dev/api/prices</code></pre>
-</body>
-</html>`;
-        return new Response(html, {
-          status: 200,
-          headers: { 'Content-Type': 'text/html; charset=utf-8' },
-        });
+<p>股票/基金实时行情查询，支持韩股、港股、A股基金。</p>
+<div class="endpoint"><span class="method">GET</span> <code>/api/prices</code> — JSON</div>
+<div class="endpoint"><span class="method">GET</span> <code>/api/prices/text</code> — 纯文本</div>
+<div class="endpoint"><span class="method">GET</span> <code>/api/stocks</code> — 股票列表</div>
+</body></html>`, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       }
 
-      return new Response(JSON.stringify({ error: 'Not Found' }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders() },
-      });
-
+      return new Response(JSON.stringify({ error: 'Not Found' }), { status: 404, headers: { 'Content-Type': 'application/json', ...CORS } });
     } catch (err) {
-      return new Response(JSON.stringify({ error: 'Internal Server Error', message: err.message }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders() },
-      });
+      return new Response(JSON.stringify({ error: 'Internal Server Error', message: err.message }), { status: 500, headers: { 'Content-Type': 'application/json', ...CORS } });
     }
   },
 };
