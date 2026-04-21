@@ -8,8 +8,9 @@
  *   市场状态 → 交易日历日历模块（calendar.js）
  *
  * 缓存策略：
- *   Cron Trigger 每 10 分钟执行 → 仅在交易时段抓取 → 写 KV
+ *   Cron Trigger 每 10 分钟执行 → 始终抓取 → 写 KV
  *   用户请求 → 始终读 KV 缓存 → 返回（含抓取时间）
+ *   /api/cache/refresh?token=xxx → POST 手动清缓存并重新抓取
  */
 
 import stockConfig from '../stocks.json';
@@ -170,13 +171,8 @@ async function writeCache(env, data) {
 // 抓取逻辑（Cron 和 fallback 共用）
 // ============================================================
 
-async function fetchAndCache(env, force = false) {
+async function fetchAndCache(env) {
   const market = getAllMarketStatus();
-
-  // Cron 模式：没有任何市场在交易时跳过；force 模式（用户请求触发）则无视
-  if (!force && !market.anyTrading) {
-    return { skipped: true, reason: '所有市场休市', market };
-  }
 
   const results = await Promise.allSettled(stockConfig.map(s => fetchStockData(s)));
   const stocks = results.map(r => r.status === 'fulfilled' ? r.value : { success: false, error: r.reason?.message });
@@ -209,12 +205,9 @@ async function handlePrices(isText, env) {
   const market = getAllMarketStatus();
   let cached = await readCache(env);
 
-  // 如果没有缓存，强制抓取一次（无论是否交易时段）
+  // 如果没有缓存，强制抓取一次
   if (!cached) {
-    const result = await fetchAndCache(env, true);
-    if (!result.skipped) {
-      cached = result;
-    }
+    cached = await fetchAndCache(env);
   }
 
   if (!cached) {
@@ -283,19 +276,19 @@ export default {
         return handleCacheStatus(env);
       }
 
-      // POST 清缓存并强制重新抓取
+      // POST 清缓存并强制重新抓取（需鉴权）
       if (pathname === '/api/cache/refresh' || pathname === '/api/cache/refresh/') {
         if (request.method !== 'POST') {
           return new Response(JSON.stringify({ error: 'Method Not Allowed' }), { status: 405, headers: { 'Content-Type': 'application/json', ...CORS } });
         }
-        await env.STOCK_CACHE.delete(KV_CACHE_KEY);
-        const result = await fetchAndCache(env, true);
-        if (result.skipped) {
-          return new Response(JSON.stringify({ status: 'skipped', reason: result.reason, market: result.market }, null, 2), {
-            headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS },
-          });
+        const token = new URL(request.url).searchParams.get('token');
+        if (token !== (env.CACHE_TOKEN || 'changeme')) {
+          return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: { 'Content-Type': 'application/json', ...CORS } });
         }
-        return new Response(JSON.stringify({ status: 'ok', fetchTime: result.fetchTime, stocks: result.stocks.length, success: result.stocks.filter(s => s.success).length }, null, 2), {
+        await env.STOCK_CACHE.delete(KV_CACHE_KEY);
+        const result = await fetchAndCache(env);
+        const ok = result.stocks.filter(s => s.success).length;
+        return new Response(JSON.stringify({ status: 'ok', fetchTime: result.fetchTime, stocks: result.stocks.length, success: ok }, null, 2), {
           headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS },
         });
       }
@@ -338,17 +331,11 @@ export default {
   },
 
   /**
-   * Cron Trigger — 每 10 分钟执行
-   * 仅在任意市场交易时段时才抓取数据并写入 KV
+   * Cron Trigger — 每 10 分钟执行，始终抓取并写入 KV
    */
   async scheduled(event, env) {
     const result = await fetchAndCache(env);
-
-    if (result.skipped) {
-      console.log(`[Cron] 跳过: ${result.reason}`);
-    } else {
-      const ok = result.stocks.filter(s => s.success).length;
-      console.log(`[Cron] 抓取完成: ${ok}/${result.stocks.length} 成功, 缓存=${result.cached}`);
-    }
+    const ok = result.stocks.filter(s => s.success).length;
+    console.log(`[Cron] 抓取完成: ${ok}/${result.stocks.length} 成功, 缓存=${result.cached}`);
   },
 };
