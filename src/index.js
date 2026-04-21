@@ -9,7 +9,7 @@
  * 市场状态：
  *   韩股  → Naver API 返回 marketStatus 字段（OPEN/CLOSE）
  *   港股  → 东方财富 API 无市场状态字段，用香港时区交易时段判断
- *   A股  → 基金净值日期与当天对比（节假日无法自动识别）
+ *   A股  → 东方财富查上证指数实时数据判断（有价格=开盘中）
  *
  * 股票配置见 stocks.json，按 market/source 自动匹配抓取网址。
  */
@@ -207,7 +207,7 @@ async function fetchStockData(stock) {
 // 市场状态：从抓取结果中提取（数据源说的算）
 // ============================================================
 
-function extractMarketStatus(results) {
+async function extractMarketStatus(results) {
   let kse = null, hk = null, cn = null;
 
   for (const r of results) {
@@ -223,19 +223,14 @@ function extractMarketStatus(results) {
     if (r.source === 'eastmoney' && !hk) {
       hk = getHKMarketStatus();
     }
-
-    // A股基金：净值日期=今天 → 可能在盘中，否则休市
-    if (r.source === 'eastmoney_fund' && !cn) {
-      const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
-      cn = r.extra?.navDate === today ? '净值更新中' : '休市';
-    }
   }
 
-  // 兜底：如果没有该市场的股票，用本地时间判断
-  const now = new Date();
-  if (!kse) kse = getKSTMarketStatus(now);
+  // A股：通过东方财富查上证指数实时数据来判断
+  cn = await getCNMarketStatus();
+
+  // 兜底
+  if (!kse) kse = getKSTMarketStatus(new Date());
   if (!hk) hk = getHKMarketStatus();
-  if (!cn) cn = getCNMarketStatus(now);
 
   const anyOpen = [kse, hk, cn].some(v => v.includes('开盘中'));
 
@@ -276,20 +271,51 @@ function getKSTMarketStatus(now) {
 }
 
 /**
- * A股市场状态（兜底，仅在没有基金数据时使用）
- * A股交易时段：09:30-11:30, 13:00-15:00 CST
+ * A股市场状态 — 通过东方财富查上证指数来判断
+ * 如果能拿到实时价格数据（f43>0），说明在交易中
  */
-function getCNMarketStatus(now) {
+async function getCNMarketStatus() {
+  try {
+    const url = 'https://push2.eastmoney.com/api/qt/stock/get?secid=1.000001&fields=f43,f152,f170&ut=fa5fd1943c7b386f172d6893dbbd1d0c';
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
+        'Referer': 'https://quote.eastmoney.com/',
+      },
+    });
+    if (!res.ok) return _cnFallbackStatus();
+    const json = await res.json();
+    if (!json.data || !json.data.f43) return _cnFallbackStatus();
+
+    const price = json.data.f43 / json.data.f152; // f152=小数位除数
+    if (price <= 0) return _cnFallbackStatus();
+
+    // 有实时价格，说明在交易中（含午间休市）
+    const now = new Date();
+    const cst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+    const day = cst.getDay();
+    const min = cst.getHours() * 60 + cst.getMinutes();
+
+    if (day === 0 || day === 6) return '周末休市';
+    if (min >= 690 && min < 780) return '午间休市';
+    return '开盘中';
+  } catch {
+    return _cnFallbackStatus();
+  }
+}
+
+function _cnFallbackStatus() {
+  const now = new Date();
   const cst = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
   const day = cst.getDay();
   const min = cst.getHours() * 60 + cst.getMinutes();
 
   if (day === 0 || day === 6) return '周末休市';
-  if (min < 570) return '盘前';              // < 09:30
-  if (min < 690) return '开盘中';              // 09:30-11:30
-  if (min < 780) return '午间休市';            // 11:30-13:00
-  if (min < 900) return '开盘中';              // 13:00-15:00
-  return '已收盘';                            // >= 15:00
+  if (min < 570) return '盘前';
+  if (min < 690) return '开盘中';
+  if (min < 780) return '午间休市';
+  if (min < 900) return '开盘中';
+  return '已收盘';
 }
 
 // ============================================================
@@ -379,7 +405,7 @@ export default {
         const data = results.map(r =>
           r.status === 'fulfilled' ? r.value : { success: false, error: r.reason?.message }
         );
-        const marketStatus = extractMarketStatus(data);
+        const marketStatus = await extractMarketStatus(data);
 
         return new Response(JSON.stringify({
           status: 'ok',
@@ -403,7 +429,7 @@ export default {
         const data = results.map(r =>
           r.status === 'fulfilled' ? r.value : { success: false, error: r.reason?.message }
         );
-        const marketStatus = extractMarketStatus(data);
+        const marketStatus = await extractMarketStatus(data);
         const text = buildTextResponse(data, marketStatus);
 
         return new Response(text, {
@@ -483,7 +509,7 @@ export default {
 <ul>
   <li>🇰🇷 韩股：Naver 返回 OPEN/CLOSE → 开盘中/休市</li>
   <li>🇭🇰 港股：本地时区判断（东方财富无状态字段，延迟~15分钟）</li>
-  <li>🇨🇳 A股：基金净值日期=今天 → 净值更新中</li>
+  <li>🇨🇳 A股：东方财富上证指数实时数据 → 开盘中/午间休市/已收盘</li>
 </ul>
 
 <h3>iOS 快捷指令配置</h3>
