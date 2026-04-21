@@ -78,54 +78,48 @@ async function fetchEastMoneyFund(code) {
 }
 
 // ============================================================
-// 市场状态（从网页抓取指数实时数据，无兜底）
+// 市场状态（抓取页面上的状态文字，原样显示）
 // ============================================================
 
-// 通过东方财富指数是否有实时价格判断市场是否开盘
-async function fetchIndexOpen(secid) {
+// 从东方财富指数页面抓取状态文字
+async function fetchEMPageStatus(url) {
   try {
-    const res = await fetch(
-      `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f170,f171&ut=fa5fd1943c7b386f172d6893dbbd1d0c`,
-      { headers: EM_HEADERS },
-    );
-    if (!res.ok) return null;
-    const json = await res.json();
-    if (!json.data) return null;
-    // f170>0 表示有实时价格变动 → 开盘中
-    return json.data.f170 > 0;
+    const res = await fetch(url, { headers: EM_HEADERS });
+    if (!res.ok) return '未知';
+    const html = await res.text();
+    if (html.includes('交易中')) return '交易中';
+    if (html.includes('已收盘')) return '已收盘';
+    if (html.includes('休市中')) return '休市中';
+    return '未知';
   } catch {
-    return null;
+    return '未知';
   }
 }
 
-// 韩股：Naver API 直接返回 marketStatus
+// 韩股：Naver API 返回 OPEN/CLOSE
 async function fetchKSEStatus() {
   try {
     const res = await fetch(`https://m.stock.naver.com/api/stock/005930/basic`, {
       headers: { 'User-Agent': EM_HEADERS['User-Agent'], 'Accept': 'application/json' },
     });
-    if (!res.ok) return null;
+    if (!res.ok) return '未知';
     const d = await res.json();
-    return d.marketStatus === 'OPEN' ? '开盘中' : '已收盘';
+    return d.marketStatus === 'OPEN' ? '交易中' : '已收盘';
   } catch {
-    return null;
+    return '未知';
   }
 }
 
 async function getMarketStatus() {
   const [kse, hk, cn] = await Promise.all([
     fetchKSEStatus(),
-    fetchIndexOpen('100.HSI'),
-    fetchIndexOpen('1.000001'),
+    fetchEMPageStatus('https://quote.eastmoney.com/gb/zsHSI.html'),
+    fetchEMPageStatus('https://quote.eastmoney.com/zs000001.html'),
   ]);
 
-  const fmt = (label, val) => val === null ? `${label}:?` : val ? `${label}:开` : `${label}:收`;
-
   return {
-    kse: kse ?? '未知',
-    hk: hk === null ? '未知' : hk ? '开盘中' : '已收盘',
-    cn: cn === null ? '未知' : cn ? '开盘中' : '已收盘',
-    summary: [fmt('韩', kse === '开盘中'), fmt('港', hk), fmt('A', cn)].join(' | '),
+    kse, hk, cn,
+    summary: `韩:${kse} | 港:${hk} | A:${cn}`,
   };
 }
 
