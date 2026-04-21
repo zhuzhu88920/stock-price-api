@@ -65,23 +65,20 @@ async function fetchEastMoneyHK(code) {
 }
 
 async function fetchEastMoneyFund(code) {
-  const res = await fetch(`https://fund.eastmoney.com/pingzhongdata/${code}.js?v=${Date.now()}`, {
-    headers: EM_HEADERS,
-  });
+  const res = await fetch(
+    `https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo?pageIndex=1&pageSize=1&plat=Android&appType=ttjj&product=EFund&Version=1&Fcodes=${code}&deviceid=${Date.now()}`,
+    { headers: EM_HEADERS },
+  );
   if (!res.ok) throw new Error(`天天基金 API ${res.status}`);
-  const text = await res.text();
-  const trendMatch = text.match(/var Data_netWorthTrend\s*=\s*(\[[\s\S]*?\]);/);
-  const nameMatch = text.match(/var fS_name\s*=\s*"([^"]+)"/);
-  if (!trendMatch) throw new Error('无法解析基金净值');
-  const trend = JSON.parse(trendMatch[1]);
-  if (!trend.length) throw new Error('基金无净值数据');
-  const latest = trend[trend.length - 1];
+  const json = await res.json();
+  if (!json.Success || !json.Datas?.length) throw new Error('基金无净值数据');
+  const d = json.Datas[0];
   return {
-    name: nameMatch?.[1] || '',
-    nav: latest.y,
-    price: latest.y,
-    changePercent: latest.equityReturn !== null ? parseFloat(latest.equityReturn.toFixed(2)) : null,
-    navDate: new Date(latest.x).toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }),
+    name: d.SHORTNAME || '',
+    nav: parseFloat(d.NAV),
+    price: parseFloat(d.NAV),
+    changePercent: d.NAVCHGRT !== null && d.NAVCHGRT !== undefined ? parseFloat(d.NAVCHGRT) : null,
+    navDate: d.PDATE || '',
   };
 }
 
