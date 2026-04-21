@@ -1,0 +1,16 @@
+{
+  "name": "stock-price-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "股票/基金实时行情 API — Cloudflare Workers",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:prod": "wrangler deploy --env production",
+    "tail": "wrangler tail",
+    "test": "node test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

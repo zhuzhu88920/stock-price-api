@@ -1,0 +1,9 @@
+name = "stock-price-api"
+main = "src/index.js"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 静态资源绑定（stocks.json 通过 import 直接引入，不需要额外绑定）
+
+[observability]
+enabled = true

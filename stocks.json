@@ -1,0 +1,50 @@
+[
+  {
+    "name": "海力士",
+    "code": "000660",
+    "market": "kr",
+    "currency": "KRW",
+    "source": "naver",
+    "emoji": "🇰🇷"
+  },
+  {
+    "name": "港股2x海力士ETF",
+    "code": "07709",
+    "market": "hk",
+    "currency": "HKD",
+    "source": "eastmoney",
+    "emoji": "🇭🇰"
+  },
+  {
+    "name": "华夏全球科技先锋混合(QDII)A",
+    "code": "005698",
+    "market": "cn",
+    "currency": "CNY",
+    "source": "eastmoney_fund",
+    "emoji": "🇨🇳"
+  },
+  {
+    "name": "摩根新兴动力混合A",
+    "code": "377240",
+    "market": "cn",
+    "currency": "CNY",
+    "source": "eastmoney_fund",
+    "emoji": "🇨🇳"
+  },
+  {
+    "name": "摩根标普500指数(QDII)人民币A",
+    "code": "017641",
+    "market": "cn",
+    "currency": "CNY",
+    "source": "eastmoney_fund",
+    "emoji": "🇨🇳"
+  },
+  {
+    "name": "摩根纳斯达克100指数(QDII)人民币A",
+    "code": "019172",
+    "market": "cn",
+    "currency": "CNY",
+    "source": "eastmoney_fund",
+    "emoji": "🇨🇳"
+  }
+]
