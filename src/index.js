@@ -139,7 +139,7 @@ function buildTextResponse(results, market, fetchTime) {
   return [
     `📊 股价查询 - ${ts}`,
     `🏦 ${market.summary}  |  ✅${ok} ❌${fail}`,
-    `🕐 数据抓取时间: ${fetchTime}`,
+    `🕐 抓取时间: ${fetchTime}`,
     '────────────────',
     '',
     results.map(formatTicker).join('\n\n'),
