@@ -138,10 +138,9 @@ function buildTextResponse(results, market, fetchTime) {
   const fail = results.length - ok;
   return [
     `📊 股价查询: ${ts}`,
+	`🕐 抓取时间: ${fetchTime}`,
     `🏦 ${market.summary}  |  ✅${ok} ❌${fail}`,
-    `🕐 抓取时间: ${fetchTime}`,
     '────────────────',
-    '',
     results.map(formatTicker).join('\n\n'),
   ].join('\n');
 }
