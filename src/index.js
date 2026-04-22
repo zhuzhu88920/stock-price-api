@@ -137,7 +137,7 @@ function buildTextResponse(results, market, fetchTime) {
   const ok = results.filter(r => r.success).length;
   const fail = results.length - ok;
   return [
-    `📊 股价查询 - ${ts}`,
+    `📊 股价查询: ${ts}`,
     `🏦 ${market.summary}  |  ✅${ok} ❌${fail}`,
     `🕐 抓取时间: ${fetchTime}`,
     '────────────────',
@@ -216,7 +216,7 @@ async function handlePrices(isText, env) {
   if (!cached) {
     // 仍然没有数据（所有市场休市且无历史缓存）
     const ts = getUserTimestamp();
-    const msg = `📊 股价查询 - ${ts}\n🏦 ${market.summary}\n⚠️ 暂无缓存数据（所有市场休市中，等待交易日积累数据）`;
+    const msg = `📊 股价查询: ${ts}\n🏦 ${market.summary}\n⚠️ 暂无缓存数据（所有市场休市中，等待交易日积累数据）`;
     const body = isText
       ? JSON.stringify({ text: msg })
       : JSON.stringify({ status: 'no_data', timestamp: ts, market, message: '暂无缓存数据' }, null, 2);
