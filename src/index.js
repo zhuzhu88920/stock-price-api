@@ -4,7 +4,7 @@
  * 数据源：
  *   韩股    → Naver Finance API
  *   港股    → 东方财富 push2 API
- *   A股基金 → 天天基金 pingzhongdata
+ *   A股基金 → 天天基金 fundmobapi
  *   市场状态 → 交易日历日历模块（calendar.js）
  *
  * 缓存策略：
@@ -210,8 +210,9 @@ async function handlePrices(isText, env) {
   if (!cached) {
     // 仍然没有数据（所有市场休市且无历史缓存）
     const ts = getUserTimestamp();
+    const msg = `📊 股价查询 - ${ts}\n🏦 ${market.summary}\n⚠️ 暂无缓存数据（所有市场休市中，等待交易日积累数据）`;
     const body = isText
-      ? `📊 股价查询 - ${ts}\n🏦 ${market.summary}\n⚠️ 暂无缓存数据（所有市场休市中，等待交易日积累数据）`
+      ? JSON.stringify({ text: msg })
       : JSON.stringify({ status: 'no_data', timestamp: ts, market, message: '暂无缓存数据' }, null, 2);
 
     return new Response(body, {
@@ -220,8 +221,9 @@ async function handlePrices(isText, env) {
   }
 
   if (isText) {
-    return new Response(buildTextResponse(cached.stocks, market, cached.fetchTime), {
-      headers: { 'Content-Type': 'text/plain; charset=utf-8', ...CORS },
+    const text = buildTextResponse(cached.stocks, market, cached.fetchTime);
+    return new Response(JSON.stringify({ text }), {
+      headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS },
     });
   }
 
