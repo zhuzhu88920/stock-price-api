@@ -11,10 +11,9 @@ binding = "STOCK_CACHE"
 id = "617edac047b54dedbb06e9acb359616b"
 # preview_id = "YOUR_PREVIEW_KV_NAMESPACE_ID"
 
-# Cron Trigger — 每 10 分钟执行一次
-# scheduled() 处理器中判断是否在交易时段，非交易时段直接跳过
+# Cron Trigger — 每 10 分钟的偏移1分钟执行（8:01, 8:11, 8:21...）
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["1,11,21,31,41,51 * * * *"]
 
 [observability]
 enabled = true
