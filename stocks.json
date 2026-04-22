@@ -16,7 +16,7 @@
     "emoji": "🇭🇰"
   },
   {
-    "name": "华夏全球科技先锋混合(QDII)A",
+    "name": "华夏全球科技",
     "code": "005698",
     "market": "cn",
     "currency": "CNY",
@@ -24,7 +24,7 @@
     "emoji": "🇨🇳"
   },
   {
-    "name": "摩根新兴动力混合A",
+    "name": "摩根新兴动力A",
     "code": "377240",
     "market": "cn",
     "currency": "CNY",
@@ -32,7 +32,7 @@
     "emoji": "🇨🇳"
   },
   {
-    "name": "摩根标普500指数(QDII)人民币A",
+    "name": "摩根标普500",
     "code": "017641",
     "market": "cn",
     "currency": "CNY",
@@ -40,7 +40,7 @@
     "emoji": "🇨🇳"
   },
   {
-    "name": "摩根纳斯达克100指数(QDII)人民币A",
+    "name": "摩根纳指100",
     "code": "019172",
     "market": "cn",
     "currency": "CNY",

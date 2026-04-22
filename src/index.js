@@ -115,15 +115,21 @@ function formatTicker(stock) {
   const sign = v => (v >= 0 ? '+' : '') + v;
 
   if (stock.source === 'eastmoney_fund') {
-    return `${stock.emoji} ${stock.name}\n💰 净值: ${stock.price.toFixed(4)}  |  ${stock.navDate}\n📊 ${sign(stock.changePercent ?? 0)}% ${dir}`;
+    const changeAmt = stock.change !== null && stock.change !== undefined
+      ? sign(stock.change.toFixed(4))
+      : '';
+    return `${stock.emoji} ${stock.name} (${stock.code})\n💰 净值: ${stock.price.toFixed(4)}  |  ${stock.navDate}\n📊 ${changeAmt} (${sign(stock.changePercent ?? 0)}%) ${dir}`;
   }
 
   const sym = { KRW: '₩', HKD: 'HK$', CNY: '¥' }[stock.currency] || '';
   const priceStr = stock.currency === 'KRW'
     ? stock.price.toLocaleString()
     : stock.price.toFixed(stock.price < 1 ? 4 : 2);
+  const changeStr = stock.currency === 'KRW'
+    ? `${sign(stock.change.toLocaleString())}`
+    : `${sign(stock.change.toFixed(stock.price < 1 ? 4 : 2))}`;
 
-  return `${stock.emoji} ${stock.name} (${stock.code}.${stock.market.toUpperCase()})\n💰 ${sym}${priceStr}\n📊 ${sign(stock.changePercent)}% ${dir}`;
+  return `${stock.emoji} ${stock.name} (${stock.code}.${stock.market.toUpperCase()})\n💰 ${sym}${priceStr}\n📊 ${sym}${changeStr} (${sign(stock.changePercent)}%) ${dir}`;
 }
 
 function buildTextResponse(results, market, fetchTime) {
